@@ -7,7 +7,7 @@ Welcome to the **Electric Vehicle Battery Management System (EV-BMS)** powered b
 
 ## 📸 Screenshots
 
-<img src="https://github.com/user-attachments/assets/9215fdc6-c9e3-4867-b88c-e7a453f8d4fa" alt="Model A Output – LSTM" width="500"/> <br/> <strong>🔬 Model A Output</strong> </p> <p align="center"><em>Battery charge/discharge predictions using LSTM architecture. Ideal for sequential state of charge forecasting.</em></p>
+<img src="https://github.com/user-attachments/assets/9215fdc6-c9e3-4867-b88c-e7a453f8d4fa" alt="Model A Output – LSTM" width="500"/> <br/> <strong>🔬 Model A Output</strong> </p> <p align="center"><em>Battery charge/discharge predictions using LSTM architecture. Ideal for sequential state of charge forecastig.</em></p>
 <img src="https://github.com/user-attachments/assets/ab9892fb-6238-4644-bea3-688c960b1a0b" alt="Model B Output – Transformer" width="500"/> <br/> <strong> Model B Output</strong> </p> <p align="center"><em>Battery charge/discharge predictions using LSTM architecture. Ideal for sequential state of charge forecasting.</em></p>
 
 p align="center"><em>Real-time battery metrics, predictions, and charging optimization displayed in a clean, intuitive interface.</em></p>
