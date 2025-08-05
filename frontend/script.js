@@ -12,6 +12,9 @@ const resultsTable = document.getElementById('results-table');
 const errorModal = document.getElementById('error-modal');
 const errorMessage = document.getElementById('error-message');
 
+// Configuration
+const API_BASE_URL = 'https://evbackend-fsw9.onrender.com';
+
 // State
 let currentInputMethod = 'dropdown';
 
@@ -70,8 +73,8 @@ async function handleFormSubmit(e) {
         return;
     }
     
-    if (!['car', 'bike'].includes(vehicleType)) {
-        showError('Please enter a valid vehicle type (car or bike).');
+    if (!['car', 'bike', 'scooter', 'bus'].includes(vehicleType)) {
+        showError('Please enter a valid vehicle type (car, bike, scooter, or bus).');
         return;
     }
     
@@ -82,13 +85,21 @@ async function handleFormSubmit(e) {
         const formData = new FormData();
         formData.append('vehicle_type', vehicleType);
         
-        const response = await fetch('https://evbackend-fsw9.onrender.com/predict/', {
+        // Add timeout for better error handling
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+        
+        const response = await fetch(`${API_BASE_URL}/predict/`, {
             method: 'POST',
-            body: formData
+            body: formData,
+            signal: controller.signal
         });
         
+        clearTimeout(timeoutId);
+        
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+            const errorText = await response.text();
+            throw new Error(`Server error (${response.status}): ${errorText}`);
         }
         
         const data = await response.json();
@@ -102,7 +113,17 @@ async function handleFormSubmit(e) {
         
     } catch (error) {
         console.error('Prediction error:', error);
-        showError(`Failed to get prediction: ${error.message}`);
+        
+        let errorMessage = 'Failed to get prediction';
+        if (error.name === 'AbortError') {
+            errorMessage = 'Request timed out. Please try again.';
+        } else if (error.message.includes('Failed to fetch')) {
+            errorMessage = 'Cannot connect to server. Please check if the backend is running.';
+        } else {
+            errorMessage = `Error: ${error.message}`;
+        }
+        
+        showError(errorMessage);
     } finally {
         setLoadingState(false);
     }
@@ -141,21 +162,33 @@ function displayResults(data) {
 function displayChart(chartUrl) {
     chartLoading.style.display = 'none';
     
-    // Fix chart URL
-    // let fixedUrl = chartUrl;
-    // if (fixedUrl.startsWith('/')) {
-    //     fixedUrl = fixedUrl.substring(1);
-    // }
-    // fixedUrl = `https://${fixedUrl}`;
-
-    predictionChart.src = fixedUrl;
+    // Construct the full URL for the chart
+    let fullChartUrl = chartUrl;
+    
+    // If it's a relative URL, make it absolute
+    if (chartUrl.startsWith('/') || !chartUrl.startsWith('http')) {
+        // Remove leading slash if present and construct full URL
+        const cleanUrl = chartUrl.replace(/^\//, '');
+        fullChartUrl = `${API_BASE_URL}/${cleanUrl}`;
+    }
+    
+    console.log('Original chart URL:', chartUrl);
+    console.log('Full chart URL:', fullChartUrl);
+    
+    predictionChart.src = fullChartUrl;
     predictionChart.style.display = 'block';
     
     // Handle image load error
     predictionChart.onerror = function() {
+        console.error('Failed to load image:', fullChartUrl);
         showError('Failed to load prediction chart. Please try again.');
         chartLoading.style.display = 'flex';
         chartLoading.innerHTML = '<p>Chart unavailable</p>';
+    };
+    
+    // Handle successful load
+    predictionChart.onload = function() {
+        console.log('Chart loaded successfully!');
     };
 }
 
@@ -169,18 +202,24 @@ function displayTable(tableData) {
         // Calculate percentage change
         const original = parseFloat(row.original) || 0;
         const predicted = parseFloat(row.predicted) || 0;
-        const difference = row.difference !== undefined && row.difference !== null ? row.difference : 'N/A';
+        const difference = row.difference !== undefined && row.difference !== null ? parseFloat(row.difference) : null;
         
         let changePercent = 'N/A';
         if (original !== 0 && !isNaN(original) && !isNaN(predicted)) {
             changePercent = (((predicted - original) / original) * 100).toFixed(2) + '%';
         }
         
+        // Format difference display
+        let differenceDisplay = 'N/A';
+        if (difference !== null && !isNaN(difference)) {
+            differenceDisplay = difference.toFixed(4);
+        }
+        
         tr.innerHTML = `
             <td><strong>${row.parameter}</strong></td>
-            <td>${row.original}</td>
-            <td>${row.predicted}</td>
-            <td class="${getDifferenceClass(difference)}">${difference}</td>
+            <td>${parseFloat(row.original).toFixed(4)}</td>
+            <td>${parseFloat(row.predicted).toFixed(4)}</td>
+            <td class="${getDifferenceClass(difference)}">${differenceDisplay}</td>
             <td class="${getChangeClass(changePercent)}">${changePercent}</td>
         `;
         
@@ -189,7 +228,7 @@ function displayTable(tableData) {
 }
 
 function getDifferenceClass(difference) {
-    if (difference === 'N/A') return '';
+    if (difference === null || difference === undefined || isNaN(difference)) return '';
     const numDiff = parseFloat(difference);
     if (numDiff > 0) return 'positive-change';
     if (numDiff < 0) return 'negative-change';
@@ -206,30 +245,36 @@ function getChangeClass(changePercent) {
 
 function updateSummaryCards(tableData) {
     // Extract key metrics from table data
-    const batteryHealthData = tableData.find(row => 
-        row.parameter.toLowerCase().includes('health') || 
-        row.parameter.toLowerCase().includes('capacity')
+    const socData = tableData.find(row => 
+        row.parameter.toLowerCase().includes('soc') || 
+        row.parameter.toLowerCase().includes('state of charge')
     );
     
-    const lifespanData = tableData.find(row => 
-        row.parameter.toLowerCase().includes('life') || 
-        row.parameter.toLowerCase().includes('cycle')
+    const cyclesData = tableData.find(row => 
+        row.parameter.toLowerCase().includes('cycle') || 
+        row.parameter.toLowerCase().includes('charging cycles')
     );
     
     const efficiencyData = tableData.find(row => 
-        row.parameter.toLowerCase().includes('efficiency') || 
-        row.parameter.toLowerCase().includes('performance')
+        row.parameter.toLowerCase().includes('efficiency')
     );
     
-    // Update cards
-    document.getElementById('battery-health').textContent = 
-        batteryHealthData ? `${batteryHealthData.predicted}` : 'Good';
+    // Update cards with actual data or fallback values
+    const batteryHealthElement = document.getElementById('battery-health');
+    const lifespanElement = document.getElementById('predicted-lifespan');
+    const efficiencyElement = document.getElementById('efficiency-rating');
     
-    document.getElementById('predicted-lifespan').textContent = 
-        lifespanData ? `${lifespanData.predicted}` : '5-8 years';
+    if (batteryHealthElement) {
+        batteryHealthElement.textContent = socData ? `${parseFloat(socData.predicted).toFixed(1)}%` : 'Good';
+    }
     
-    document.getElementById('efficiency-rating').textContent = 
-        efficiencyData ? `${efficiencyData.predicted}` : 'A+';
+    if (lifespanElement) {
+        lifespanElement.textContent = cyclesData ? `${Math.round(parseFloat(cyclesData.predicted))} cycles` : '5-8 years';
+    }
+    
+    if (efficiencyElement) {
+        efficiencyElement.textContent = efficiencyData ? `${parseFloat(efficiencyData.predicted).toFixed(1)}%` : 'A+';
+    }
 }
 
 function showError(message) {
@@ -243,10 +288,14 @@ function closeErrorModal() {
 
 // Utility functions
 function downloadChart() {
-    const link = document.createElement('a');
-    link.href = predictionChart.src;
-    link.download = 'battery-prediction-chart.png';
-    link.click();
+    if (predictionChart.src) {
+        const link = document.createElement('a');
+        link.href = predictionChart.src;
+        link.download = `battery-prediction-chart-${new Date().getTime()}.png`;
+        link.click();
+    } else {
+        showError('No chart available to download');
+    }
 }
 
 function exportTable() {
@@ -262,21 +311,37 @@ function exportTable() {
     // Rows
     const rows = Array.from(table.querySelectorAll('tbody tr'));
     rows.forEach(row => {
-        const cells = Array.from(row.querySelectorAll('td')).map(td => 
-            td.textContent.trim()
-        );
+        const cells = Array.from(row.querySelectorAll('td')).map(td => {
+            // Clean the text content and remove any special characters for CSV
+            return `"${td.textContent.trim().replace(/"/g, '""')}"`;
+        });
         csv += cells.join(',') + '\n';
     });
     
     // Download
-    const blob = new Blob([csv], { type: 'text/csv' });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'battery-prediction-data.csv';
+    link.download = `battery-prediction-data-${new Date().getTime()}.csv`;
     link.click();
     window.URL.revokeObjectURL(url);
 }
+
+// Add event listeners for utility functions
+document.addEventListener('DOMContentLoaded', function() {
+    // Add download chart button listener if it exists
+    const downloadChartBtn = document.getElementById('download-chart-btn');
+    if (downloadChartBtn) {
+        downloadChartBtn.addEventListener('click', downloadChart);
+    }
+    
+    // Add export table button listener if it exists
+    const exportTableBtn = document.getElementById('export-table-btn');
+    if (exportTableBtn) {
+        exportTableBtn.addEventListener('click', exportTable);
+    }
+});
 
 // Add CSS for change indicators
 const style = document.createElement('style');
@@ -293,6 +358,28 @@ style.textContent = `
     
     .positive-change::before {
         content: '+';
+    }
+    
+    .negative-change::before {
+        content: '';
+    }
+    
+    /* Additional styles for better visual feedback */
+    #prediction-chart {
+        max-width: 100%;
+        height: auto;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+    
+    .chart-loading {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 300px;
+        background-color: #f9fafb;
+        border-radius: 8px;
+        border: 2px dashed #d1d5db;
     }
 `;
 document.head.appendChild(style);
