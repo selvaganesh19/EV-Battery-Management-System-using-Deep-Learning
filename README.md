@@ -18,7 +18,7 @@
 ## 🚀 Features
 
 - 🔋 **Deep Learning Powered Predictions**  
-  Utilize TensorFlow models to predict battery state-of-health and remaining useful life.
+  Utilize TensorFlow models to predict battery state-of-health and remaining useful life. =
 
 - 🌐 **Modern Web Interface**  
   Interactive frontend for user input, including dropdown and manual modes.
