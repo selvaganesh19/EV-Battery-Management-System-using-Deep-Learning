@@ -103,9 +103,6 @@ mlruns/
 
 plots/
 images/
-*.png
-*.jpg
-*.jpeg
 *.gif
 *.svg
 
