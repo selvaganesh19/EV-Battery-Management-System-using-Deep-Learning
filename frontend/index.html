@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EV Battery Life Predictor</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header Section -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-battery-three-quarters"></i>
+                    <h1>EV Battery Life Predictor</h1>
+                </div>
+                <p class="subtitle">Predict your electric vehicle's battery performance with AI-powered analytics</p>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Input Section -->
+            <section class="input-section">
+                <div class="card">
+                    <h2><i class="fas fa-car"></i> Vehicle Selection</h2>
+                    
+                    <form id="predict-form" class="prediction-form">
+                        <div class="form-group">
+                            <label for="input-method">Choose Input Method:</label>
+                            <div class="input-method-toggle">
+                                <button type="button" id="dropdown-btn" class="method-btn active">
+                                    <i class="fas fa-list"></i> Select from List
+                                </button>
+                                <button type="button" id="manual-btn" class="method-btn">
+                                    <i class="fas fa-keyboard"></i> Manual Entry
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Dropdown Selection -->
+                        <div id="dropdown-section" class="input-section-content">
+                            <div class="form-group">
+                                <label for="vehicle-select">Vehicle Type:</label>
+                                <div class="select-wrapper">
+                                    <select id="vehicle-select" class="form-control">
+                                        <option value="">Choose a vehicle type...</option>
+                                        <option value="car">🚗 Car</option>
+                                        <option value="bike">🏍️ Bike</option>
+                                    </select>
+                                    <i class="fas fa-chevron-down select-arrow"></i>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Manual Input -->
+                        <div id="manual-section" class="input-section-content" style="display: none;">
+                            <div class="form-group">
+                                <label for="vehicle-input">Vehicle Type:</label>
+                                <input type="text" id="vehicle-input" class="form-control" placeholder="Enter vehicle type (car or bike)">
+                                <small class="help-text">Supported types: car, bike</small>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="predict-btn" id="predict-btn">
+                            <i class="fas fa-chart-line"></i>
+                            <span>Generate Prediction</span>
+                            <div class="loading-spinner" style="display: none;"></div>
+                        </button>
+                    </form>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section id="results-section" class="results-section" style="display: none;">
+                <div class="card">
+                    <h2><i class="fas fa-chart-bar"></i> Prediction Results</h2>
+                    
+                    <!-- Chart Section -->
+                    <div class="chart-container">
+                        <div class="chart-header">
+                            <h3>Battery Performance Graph</h3>
+                            <div class="chart-controls">
+                                <button class="chart-btn" onclick="downloadChart()">
+                                    <i class="fas fa-download"></i> Download
+                                </button>
+                            </div>
+                        </div>
+                        <div class="chart-wrapper">
+                            <img id="prediction-chart" src="/placeholder.svg" alt="Battery Prediction Graph" class="chart-image">
+                            <div class="chart-loading" id="chart-loading">
+                                <div class="loading-spinner"></div>
+                                <p>Generating chart...</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Data Table Section -->
+                    <div class="table-container">
+                        <div class="table-header">
+                            <h3>Detailed Analysis</h3>
+                            <div class="table-controls">
+                                <button class="table-btn" onclick="exportTable()">
+                                    <i class="fas fa-file-export"></i> Export
+                                </button>
+                            </div>
+                        </div>
+                        <div class="table-wrapper">
+                            <table id="results-table" class="results-table">
+                                <thead>
+                                    <tr>
+                                        <th><i class="fas fa-cog"></i> Parameter</th>
+                                        <th><i class="fas fa-database"></i> Original</th>
+                                        <th><i class="fas fa-crystal-ball"></i> Predicted</th>
+                                        <th><i class="fas fa-exchange-alt"></i> Difference</th>
+                                        <th><i class="fas fa-percentage"></i> Change %</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Summary Cards -->
+                    <div class="summary-cards">
+                        <div class="summary-card">
+                            <div class="card-icon">
+                                <i class="fas fa-battery-full"></i>
+                            </div>
+                            <div class="card-content">
+                                <h4>Battery Health</h4>
+                                <p id="battery-health">--</p>
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="card-icon">
+                                <i class="fas fa-clock"></i>
+                            </div>
+                            <div class="card-content">
+                                <h4>Predicted Lifespan</h4>
+                                <p id="predicted-lifespan">--</p>
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="card-icon">
+                                <i class="fas fa-leaf"></i>
+                            </div>
+                            <div class="card-content">
+                                <h4>Efficiency Rating</h4>
+                                <p id="efficiency-rating">--</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>&copy; 2024 EV Battery Predictor. Powered by AI Analytics.</p>
+        </footer>
+    </div>
+
+    <!-- Error Modal -->
+    <div id="error-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-exclamation-triangle"></i> Error</h3>
+                <button class="close-btn" onclick="closeErrorModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="error-message"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeErrorModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
