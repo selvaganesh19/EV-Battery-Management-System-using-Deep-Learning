@@ -142,12 +142,12 @@ function displayChart(chartUrl) {
     chartLoading.style.display = 'none';
     
     // Fix chart URL
-    let fixedUrl = chartUrl;
-    if (fixedUrl.startsWith('/')) {
-        fixedUrl = fixedUrl.substring(1);
-    }
-    fixedUrl = `http://127.0.0.1:8000/${fixedUrl}`;
-    
+    // let fixedUrl = chartUrl;
+    // if (fixedUrl.startsWith('/')) {
+    //     fixedUrl = fixedUrl.substring(1);
+    // }
+    // fixedUrl = `https://${fixedUrl}`;
+
     predictionChart.src = fixedUrl;
     predictionChart.style.display = 'block';
     
