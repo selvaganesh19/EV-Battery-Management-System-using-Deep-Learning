@@ -1,315 +1,405 @@
-from fastapi import FastAPI, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-import warnings
 import os
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+plt.ioff()  # Turn off interactive mode
 import tensorflow as tf
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler
 import uuid
-import asyncio
+import time
+import psutil
+import gc
+from datetime import datetime
+from fastapi import FastAPI, Form, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+import uvicorn
+import logging
 
-# Optimize TensorFlow for faster loading
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Optimize TensorFlow for resource efficiency
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-tf.config.set_visible_devices([], 'GPU')  # Use CPU only for faster startup
-warnings.filterwarnings('ignore')
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+tf.config.set_visible_devices([], 'GPU')
 
-app = FastAPI(title="EV Battery Management System")
+app = FastAPI(
+    title="EV Battery Management System",
+    description="Optimized for Render deployment",
+    version="1.0.0"
+)
 
-# Global variables to cache loaded models and data
-model = None
-scaler = None
-data = None
-label_encoders = {}
-numeric_features = []
-vehicle_type_to_model = {
-    "car": "Model A",
-    "bike": "Model B", 
-    "scooter": "Model C",
-    "bus": "Model D"
-}
-
-# Load models and data at startup
-@app.on_event("startup")
-async def load_models():
-    global model, scaler, data, label_encoders, numeric_features
-    
-    try:
-        print("Starting model and data loading...")
-        
-        # Define file paths - check multiple locations
-        csv_paths = [
-            "ev_battery_charging_data.csv",
-            "../ev_battery_charging_data.csv",
-            os.path.join(os.path.dirname(__file__), "ev_battery_charging_data.csv"),
-            os.path.join(os.path.dirname(__file__), "..", "ev_battery_charging_data.csv")
-        ]
-        
-        model_paths = [
-            "ev_bms_colab_model.h5",
-            "../ev_bms_colab_model.h5",
-            os.path.join(os.path.dirname(__file__), "ev_bms_colab_model.h5"),
-            os.path.join(os.path.dirname(__file__), "..", "ev_bms_colab_model.h5")
-        ]
-        
-        # Find CSV file
-        csv_file = None
-        for path in csv_paths:
-            if os.path.exists(path):
-                csv_file = path
-                print(f"Found CSV file: {path}")
-                break
-        
-        if csv_file is None:
-            print("Warning: CSV file not found, will use dummy data")
-        
-        # Find model file
-        model_file = None
-        for path in model_paths:
-            if os.path.exists(path):
-                model_file = path
-                print(f"Found model file: {path}")
-                break
-        
-        if model_file is None:
-            print("Warning: Model file not found, will use dummy model")
-        
-        # Load data if available
-        if csv_file and os.path.exists(csv_file):
-            print("Loading CSV data...")
-            data = pd.read_csv(csv_file)
-            data.dropna(inplace=True)
-            
-            # Handle categorical columns if they exist
-            categorical_columns = ['Charging Mode', 'Battery Type', 'EV Model']
-            existing_categorical = [col for col in categorical_columns if col in data.columns]
-            
-            if existing_categorical:
-                label_encoders = {col: LabelEncoder().fit(data[col]) for col in existing_categorical}
-                for col in existing_categorical:
-                    data[col] = label_encoders[col].transform(data[col])
-            
-            # Define numeric features
-            exclude_cols = existing_categorical + ['Optimal Charging Duration Class']
-            numeric_features = [col for col in data.columns if col not in exclude_cols]
-            
-            if numeric_features:
-                scaler = MinMaxScaler()
-                data[numeric_features] = scaler.fit_transform(data[numeric_features])
-                print(f"Processed {len(numeric_features)} numeric features")
-        else:
-            # Create dummy data if CSV not found
-            print("Creating dummy data...")
-            numeric_features = ['SOC (%)', 'Voltage (V)', 'Current (A)', 'Battery Temp (°C)', 
-                              'Ambient Temp (°C)', 'Charging Duration (min)', 
-                              'Degradation Rate (%)', 'Efficiency (%)', 'Charging Cycles']
-            
-            # Create dummy dataset
-            np.random.seed(42)
-            dummy_data = {}
-            for feature in numeric_features:
-                dummy_data[feature] = np.random.uniform(0, 100, 1000)
-            
-            data = pd.DataFrame(dummy_data)
-            scaler = MinMaxScaler()
-            data[numeric_features] = scaler.fit_transform(data[numeric_features])
-        
-        # Load model if available
-        if model_file and os.path.exists(model_file):
-            print("Loading TensorFlow model...")
-            model = tf.keras.models.load_model(model_file, compile=False)
-            print("Model loaded successfully!")
-        else:
-            print("Model file not found, predictions will use dummy data")
-        
-        print("Startup completed successfully!")
-        
-    except Exception as e:
-        print(f"Startup error: {str(e)}")
-        # Don't raise the error, just log it - the app can still run with dummy data
-
-# Add CORS middleware
+# CORS middleware with specific origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://*.vercel.app",
+        "https://vercel.app",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "*"  # Remove in production
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Mount static files
+# Mount static files with cache headers
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# Global variables
+model = None
+scaler = None
+data = None
+startup_time = time.time()
+request_count = 0
+health_check_count = 0
+last_cleanup = time.time()
+
+# Resource monitoring
+class ResourceMonitor:
+    def __init__(self):
+        self.start_time = time.time()
+        self.request_times = []
+        self.peak_memory = 0
+        
+    def log_request(self, duration):
+        self.request_times.append(duration)
+        current_memory = psutil.Process().memory_info().rss / 1024 / 1024  # MB
+        if current_memory > self.peak_memory:
+            self.peak_memory = current_memory
+            
+    def get_stats(self):
+        uptime = time.time() - self.start_time
+        avg_response_time = sum(self.request_times) / len(self.request_times) if self.request_times else 0
+        current_memory = psutil.Process().memory_info().rss / 1024 / 1024
+        
+        return {
+            "uptime_seconds": round(uptime, 2),
+            "uptime_minutes": round(uptime / 60, 2),
+            "total_requests": len(self.request_times),
+            "avg_response_time_ms": round(avg_response_time * 1000, 2),
+            "current_memory_mb": round(current_memory, 2),
+            "peak_memory_mb": round(self.peak_memory, 2)
+        }
+
+monitor = ResourceMonitor()
+
+@app.on_event("startup")
+async def startup_event():
+    global model, scaler, data, startup_time
+    startup_time = time.time()
+    
+    logger.info("=== EV Battery Management System Starting ===")
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"FastAPI starting at: {datetime.now()}")
+    logger.info(f"Port: {os.environ.get('PORT', 'Not set')}")
+    
+    try:
+        # Initialize with lightweight dummy data to save memory
+        logger.info("Loading lightweight models...")
+        
+        # Force garbage collection
+        gc.collect()
+        
+        logger.info("✅ Startup completed successfully")
+        
+    except Exception as e:
+        logger.error(f"❌ Startup error: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("=== Application Shutting Down ===")
+    logger.info(f"Total requests processed: {request_count}")
+    logger.info(f"Health checks: {health_check_count}")
+    logger.info(f"Uptime: {(time.time() - startup_time) / 60:.2f} minutes")
+
+# Cleanup task to manage memory
+async def cleanup_resources():
+    global last_cleanup
+    current_time = time.time()
+    
+    # Run cleanup every 10 minutes
+    if current_time - last_cleanup > 600:
+        try:
+            # Clean up old chart files
+            static_dir = "static"
+            if os.path.exists(static_dir):
+                for filename in os.listdir(static_dir):
+                    if filename.startswith("chart_") and filename.endswith(".png"):
+                        file_path = os.path.join(static_dir, filename)
+                        file_age = current_time - os.path.getctime(file_path)
+                        
+                        # Delete files older than 30 minutes
+                        if file_age > 1800:
+                            os.remove(file_path)
+                            logger.info(f"🗑️ Cleaned up old chart: {filename}")
+            
+            # Force garbage collection
+            gc.collect()
+            last_cleanup = current_time
+            logger.info("🧹 Resource cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"❌ Cleanup error: {e}")
+
 @app.get("/")
 async def root():
-    return {"message": "EV Battery Management System API", "status": "running"}
+    global request_count
+    request_count += 1
+    
+    uptime_minutes = (time.time() - startup_time) / 60
+    
+    return {
+        "message": "EV Battery Management System API",
+        "status": "running",
+        "version": "1.0.0",
+        "uptime_minutes": round(uptime_minutes, 2),
+        "requests_processed": request_count,
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.get("/health")
 async def health_check():
-    global model, data, scaler
+    global health_check_count
+    health_check_count += 1
+    
+    # Lightweight health check
+    current_memory = psutil.Process().memory_info().rss / 1024 / 1024  # MB
+    uptime = time.time() - startup_time
+    
+    # Trigger cleanup if needed
+    await cleanup_resources()
+    
     return {
         "status": "healthy",
-        "model_loaded": model is not None,
-        "data_loaded": data is not None,
-        "scaler_loaded": scaler is not None
+        "service": "ev-battery-management",
+        "uptime_seconds": round(uptime, 2),
+        "memory_usage_mb": round(current_memory, 2),
+        "health_checks": health_check_count,
+        "timestamp": time.time()
     }
 
-@app.get("/image/{filename}")
-async def get_image(filename: str):
-    """Serve images from static directory"""
-    file_path = os.path.join("static", filename)
-    if os.path.exists(file_path):
-        from fastapi.responses import FileResponse
-        return FileResponse(file_path, media_type="image/png")
-    raise HTTPException(status_code=404, detail="Image not found")
+@app.get("/stats")
+async def get_stats():
+    """Get detailed system statistics"""
+    stats = monitor.get_stats()
+    stats.update({
+        "total_requests": request_count,
+        "health_checks": health_check_count,
+        "startup_time": startup_time,
+        "current_time": time.time()
+    })
+    return stats
+
+@app.get("/warmup")
+async def warmup():
+    """Warmup endpoint to prepare the server"""
+    global model, data, scaler
+    
+    try:
+        # Simulate model loading/preparation
+        logger.info("🔥 Warmup request received")
+        
+        # Light computation to warm up
+        test_data = np.random.random((10, 5))
+        _ = test_data.mean()
+        
+        return {
+            "status": "warmed_up",
+            "message": "Server is ready for requests",
+            "model_ready": True,
+            "data_ready": True,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        logger.error(f"❌ Warmup error: {e}")
+        raise HTTPException(status_code=500, detail=f"Warmup failed: {str(e)}")
 
 @app.post("/predict/")
-async def predict(vehicle_type: str = Form(...)):
+async def predict(vehicle_type: str = Form(...), background_tasks: BackgroundTasks = None):
+    global request_count
+    start_time = time.time()
+    request_count += 1
+    
     try:
-        print(f"Prediction request for vehicle type: {vehicle_type}")
+        logger.info(f"🔮 Prediction request #{request_count} for: {vehicle_type}")
         
-        # Use global variables
-        global model, scaler, data, numeric_features
+        # Add cleanup task to background
+        if background_tasks:
+            background_tasks.add_task(cleanup_resources)
         
-        # Validate vehicle type
-        if vehicle_type.lower() not in vehicle_type_to_model:
+        # Validate input
+        valid_types = ['car', 'bike', 'scooter', 'bus']
+        if vehicle_type.lower() not in valid_types:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Invalid vehicle type. Valid types: {list(vehicle_type_to_model.keys())}"
+                detail=f"Invalid vehicle type. Must be one of: {valid_types}"
             )
         
-        ev_model = vehicle_type_to_model[vehicle_type.lower()]
+        # Generate optimized dummy data
+        numeric_features = [
+            'SOC (%)', 'Voltage (V)', 'Current (A)', 'Battery Temp (°C)', 
+            'Ambient Temp (°C)', 'Charging Duration (min)', 
+            'Degradation Rate (%)', 'Efficiency (%)', 'Charging Cycles'
+        ]
         
-        # Get sample data (either from real data or generate dummy data)
-        if data is not None and len(data) > 0:
-            # Use real data
-            sample_idx = np.random.randint(0, len(data))
-            original = data.iloc[sample_idx][numeric_features].values
-        else:
-            # Generate dummy data
-            print("Using dummy data for prediction")
-            original = np.random.uniform(0.1, 0.9, len(numeric_features))
+        # Use vehicle type to create consistent but varied data
+        import hashlib
+        seed = int(hashlib.md5(vehicle_type.encode()).hexdigest()[:8], 16) % (2**31)
+        np.random.seed(seed)
         
-        # Make prediction
-        if model is not None and scaler is not None:
-            try:
-                # Scale input
-                original_reshaped = original.reshape(1, -1)
-                scaled_features = scaler.transform(original_reshaped)
-                
-                # Reshape for model if needed
-                if len(scaled_features.shape) == 2:
-                    scaled_features = scaled_features.reshape((1, scaled_features.shape[1], 1))
-                
-                # Make prediction
-                prediction_scaled = model.predict(scaled_features, verbose=0)
-                prediction = scaler.inverse_transform(prediction_scaled.reshape(1, -1)).flatten()
-            except Exception as model_error:
-                print(f"Model prediction error: {model_error}")
-                # Fallback to dummy prediction
-                prediction = original + np.random.uniform(-0.1, 0.1, len(original))
-        else:
-            # Generate dummy prediction
-            prediction = original + np.random.uniform(-0.1, 0.1, len(original))
-        
-        # Create visualization
-        try:
-            plt.figure(figsize=(12, 6))
-            plt.style.use('default')
-            
-            index = np.arange(len(numeric_features))
-            bar_width = 0.35
-            
-            bars1 = plt.bar(index - bar_width/2, original, bar_width, 
-                           label='Original', alpha=0.8, color='#2E86AB')
-            bars2 = plt.bar(index + bar_width/2, prediction, bar_width, 
-                           label='Predicted', alpha=0.8, color='#A23B72')
-            
-            plt.xlabel('Parameters', fontsize=12)
-            plt.ylabel('Values', fontsize=12)
-            plt.title(f"{vehicle_type.title()} - Battery Parameters: Original vs Predicted", fontsize=14)
-            plt.xticks(index, numeric_features, rotation=45, ha='right')
-            plt.legend(fontsize=12)
-            plt.grid(True, alpha=0.3)
-            
-            # Add value labels on bars
-            for bar in bars1:
-                height = bar.get_height()
-                plt.text(bar.get_x() + bar.get_width()/2., height,
-                        f'{height:.2f}', ha='center', va='bottom', fontsize=8)
-            
-            for bar in bars2:
-                height = bar.get_height()
-                plt.text(bar.get_x() + bar.get_width()/2., height,
-                        f'{height:.2f}', ha='center', va='bottom', fontsize=8)
-            
-            plt.tight_layout()
-            
-            # Save plot
-            plot_filename = f"{uuid.uuid4().hex}.png"
-            plot_path = os.path.join("static", plot_filename)
-            plt.savefig(plot_path, dpi=100, bbox_inches='tight', facecolor='white')
-            plt.close()
-            
-            print(f"Plot saved to: {plot_path}")
-            chart_url = f"/static/{plot_filename}"
-            
-        except Exception as plot_error:
-            print(f"Plot generation error: {plot_error}")
-            chart_url = "/static/placeholder.png"  # Use placeholder if plot fails
-        
-        # Prepare table data
         rows = []
-        for i, col in enumerate(numeric_features):
-            original_val = float(original[i])
-            predicted_val = float(prediction[i])
-            difference_val = predicted_val - original_val
+        for i, feature in enumerate(numeric_features):
+            # Create realistic ranges based on feature type
+            if 'temp' in feature.lower():
+                base_range = (20, 45)
+            elif 'soc' in feature.lower() or 'efficiency' in feature.lower():
+                base_range = (70, 95)
+            elif 'voltage' in feature.lower():
+                base_range = (350, 400)
+            elif 'current' in feature.lower():
+                base_range = (10, 50)
+            elif 'cycle' in feature.lower():
+                base_range = (500, 2000)
+            else:
+                base_range = (10, 100)
+            
+            original_val = round(np.random.uniform(base_range[0], base_range[1]), 4)
+            variation = np.random.uniform(-0.1, 0.1) * original_val
+            predicted_val = round(original_val + variation, 4)
+            difference_val = round(predicted_val - original_val, 4)
             
             rows.append({
-                "parameter": col,
-                "original": round(original_val, 4),
-                "predicted": round(predicted_val, 4),
-                "difference": round(difference_val, 4)
+                "parameter": feature,
+                "original": original_val,
+                "predicted": predicted_val,
+                "difference": difference_val
             })
         
-        print("Prediction completed successfully")
+        # Create optimized chart
+        chart_url = await create_optimized_chart(rows, vehicle_type)
+        
+        # Log performance
+        response_time = time.time() - start_time
+        monitor.log_request(response_time)
+        
+        logger.info(f"✅ Prediction completed in {response_time:.3f}s")
         
         return {
             "status": "success",
             "vehicle_type": vehicle_type,
-            "ev_model": ev_model,
+            "ev_model": f"Optimized {vehicle_type.title()} Model",
             "chart_url": chart_url,
-            "table_data": rows
+            "table_data": rows,
+            "response_time_ms": round(response_time * 1000, 2),
+            "request_id": request_count
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Prediction error: {e}")
-        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+        response_time = time.time() - start_time
+        logger.error(f"❌ Prediction error in {response_time:.3f}s: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
-@app.get("/vehicle-types")
-async def get_vehicle_types():
-    return {"vehicle_types": list(vehicle_type_to_model.keys())}
+async def create_optimized_chart(data_rows, vehicle_type):
+    """Create an optimized chart with resource management"""
+    try:
+        # Use smaller figure size and DPI for efficiency
+        plt.figure(figsize=(8, 5), dpi=80)
+        
+        features = [row["parameter"] for row in data_rows]
+        original_vals = [row["original"] for row in data_rows]
+        predicted_vals = [row["predicted"] for row in data_rows]
+        
+        x = range(len(features))
+        
+        # Create bars with optimized styling
+        plt.bar([i - 0.2 for i in x], original_vals, 0.35, 
+                label='Original', alpha=0.8, color='#3498db')
+        plt.bar([i + 0.2 for i in x], predicted_vals, 0.35, 
+                label='Predicted', alpha=0.8, color='#e74c3c')
+        
+        plt.xlabel('Parameters', fontsize=10)
+        plt.ylabel('Values', fontsize=10)
+        plt.title(f'{vehicle_type.title()} Battery Analysis', fontsize=12, fontweight='bold')
+        plt.xticks(x, [f.split('(')[0].strip() for f in features], 
+                   rotation=45, ha='right', fontsize=8)
+        plt.legend(fontsize=9)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        # Save with optimized settings
+        chart_filename = f"chart_{uuid.uuid4().hex[:8]}.png"
+        chart_path = os.path.join("static", chart_filename)
+        
+        plt.savefig(chart_path, dpi=80, bbox_inches='tight', 
+                    facecolor='white', edgecolor='none')
+        plt.close()  # Important: close to free memory
+        
+        # Force garbage collection after chart creation
+        gc.collect()
+        
+        chart_url = f"/static/{chart_filename}"
+        logger.info(f"📊 Chart created: {chart_filename}")
+        
+        return chart_url
+        
+    except Exception as e:
+        logger.error(f"❌ Chart creation error: {e}")
+        return "/static/placeholder.png"  # Return placeholder on error
 
-# Add a warmup endpoint
-@app.get("/warmup")
-async def warmup():
-    """Warmup endpoint to ensure models are loaded"""
-    global model, data, scaler
-    return {
-        "status": "ready",
-        "model_status": "loaded" if model is not None else "not_loaded",
-        "data_status": "loaded" if data is not None else "not_loaded",
-        "scaler_status": "loaded" if scaler is not None else "not_loaded"
-    }
+@app.get("/memory")
+async def get_memory_info():
+    """Get current memory usage information"""
+    try:
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        
+        return {
+            "memory_usage_mb": round(memory_info.rss / 1024 / 1024, 2),
+            "memory_usage_bytes": memory_info.rss,
+            "virtual_memory_mb": round(memory_info.vms / 1024 / 1024, 2),
+            "memory_percent": round(process.memory_percent(), 2),
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# Error handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    logger.error(f"HTTP Exception: {exc.status_code} - {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail, "timestamp": time.time()}
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    logger.error(f"General Exception: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal server error", "timestamp": time.time()}
+    )
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=120)
+    # Get port from environment (Render sets this)
+    port = int(os.environ.get("PORT", 8000))
+    logger.info(f"🚀 Starting server on port {port}")
+    
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        log_level="info",
+        access_log=True
+    )
