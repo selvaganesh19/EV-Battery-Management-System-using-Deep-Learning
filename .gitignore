@@ -100,7 +100,7 @@ mlruns/
 # datasets/
 
 # Generated plots and images
-static/
+
 plots/
 images/
 *.png
