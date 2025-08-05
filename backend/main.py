@@ -1,337 +1,315 @@
-import os
-import sys
-import json
-import uuid
-import time
-import random
-import hashlib
-from datetime import datetime
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, HTMLResponse
-import uvicorn
-import logging
+import warnings
+import os
+import pandas as pd
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
+import uuid
+import asyncio
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Optimize TensorFlow for faster loading
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+tf.config.set_visible_devices([], 'GPU')  # Use CPU only for faster startup
+warnings.filterwarnings('ignore')
 
-app = FastAPI(
-    title="EV Battery Management System",
-    description="Ultra-lightweight version",
-    version="1.0.0"
-)
+app = FastAPI(title="EV Battery Management System")
 
+# Global variables to cache loaded models and data
+model = None
+scaler = None
+data = None
+label_encoders = {}
+numeric_features = []
+vehicle_type_to_model = {
+    "car": "Model A",
+    "bike": "Model B", 
+    "scooter": "Model C",
+    "bus": "Model D"
+}
+
+# Load models and data at startup
+@app.on_event("startup")
+async def load_models():
+    global model, scaler, data, label_encoders, numeric_features
+    
+    try:
+        print("Starting model and data loading...")
+        
+        # Define file paths - check multiple locations
+        csv_paths = [
+            "ev_battery_charging_data.csv",
+            "../ev_battery_charging_data.csv",
+            os.path.join(os.path.dirname(__file__), "ev_battery_charging_data.csv"),
+            os.path.join(os.path.dirname(__file__), "..", "ev_battery_charging_data.csv")
+        ]
+        
+        model_paths = [
+            "ev_bms_colab_model.h5",
+            "../ev_bms_colab_model.h5",
+            os.path.join(os.path.dirname(__file__), "ev_bms_colab_model.h5"),
+            os.path.join(os.path.dirname(__file__), "..", "ev_bms_colab_model.h5")
+        ]
+        
+        # Find CSV file
+        csv_file = None
+        for path in csv_paths:
+            if os.path.exists(path):
+                csv_file = path
+                print(f"Found CSV file: {path}")
+                break
+        
+        if csv_file is None:
+            print("Warning: CSV file not found, will use dummy data")
+        
+        # Find model file
+        model_file = None
+        for path in model_paths:
+            if os.path.exists(path):
+                model_file = path
+                print(f"Found model file: {path}")
+                break
+        
+        if model_file is None:
+            print("Warning: Model file not found, will use dummy model")
+        
+        # Load data if available
+        if csv_file and os.path.exists(csv_file):
+            print("Loading CSV data...")
+            data = pd.read_csv(csv_file)
+            data.dropna(inplace=True)
+            
+            # Handle categorical columns if they exist
+            categorical_columns = ['Charging Mode', 'Battery Type', 'EV Model']
+            existing_categorical = [col for col in categorical_columns if col in data.columns]
+            
+            if existing_categorical:
+                label_encoders = {col: LabelEncoder().fit(data[col]) for col in existing_categorical}
+                for col in existing_categorical:
+                    data[col] = label_encoders[col].transform(data[col])
+            
+            # Define numeric features
+            exclude_cols = existing_categorical + ['Optimal Charging Duration Class']
+            numeric_features = [col for col in data.columns if col not in exclude_cols]
+            
+            if numeric_features:
+                scaler = MinMaxScaler()
+                data[numeric_features] = scaler.fit_transform(data[numeric_features])
+                print(f"Processed {len(numeric_features)} numeric features")
+        else:
+            # Create dummy data if CSV not found
+            print("Creating dummy data...")
+            numeric_features = ['SOC (%)', 'Voltage (V)', 'Current (A)', 'Battery Temp (°C)', 
+                              'Ambient Temp (°C)', 'Charging Duration (min)', 
+                              'Degradation Rate (%)', 'Efficiency (%)', 'Charging Cycles']
+            
+            # Create dummy dataset
+            np.random.seed(42)
+            dummy_data = {}
+            for feature in numeric_features:
+                dummy_data[feature] = np.random.uniform(0, 100, 1000)
+            
+            data = pd.DataFrame(dummy_data)
+            scaler = MinMaxScaler()
+            data[numeric_features] = scaler.fit_transform(data[numeric_features])
+        
+        # Load model if available
+        if model_file and os.path.exists(model_file):
+            print("Loading TensorFlow model...")
+            model = tf.keras.models.load_model(model_file, compile=False)
+            print("Model loaded successfully!")
+        else:
+            print("Model file not found, predictions will use dummy data")
+        
+        print("Startup completed successfully!")
+        
+    except Exception as e:
+        print(f"Startup error: {str(e)}")
+        # Don't raise the error, just log it - the app can still run with dummy data
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Mount static files
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-startup_time = time.time()
-request_count = 0
-
-@app.on_event("startup")
-async def startup_event():
-    global startup_time
-    startup_time = time.time()
-    logger.info("=== Ultra-Fast EV Battery System Starting ===")
-    logger.info("✅ Startup completed in <1 second!")
-
 @app.get("/")
 async def root():
-    global request_count
-    request_count += 1
-    
-    return {
-        "message": "EV Battery Management System API",
-        "status": "running",
-        "version": "ultra-lightweight-1.0.0",
-        "uptime_minutes": round((time.time() - startup_time) / 60, 2),
-        "requests_processed": request_count,
-        "deployment": "render-optimized"
-    }
+    return {"message": "EV Battery Management System API", "status": "running"}
 
 @app.get("/health")
 async def health_check():
+    global model, data, scaler
     return {
         "status": "healthy",
-        "service": "ev-battery-management",
-        "uptime_seconds": round(time.time() - startup_time, 2),
-        "memory_efficient": True,
-        "timestamp": time.time()
+        "model_loaded": model is not None,
+        "data_loaded": data is not None,
+        "scaler_loaded": scaler is not None
     }
+
+@app.get("/image/{filename}")
+async def get_image(filename: str):
+    """Serve images from static directory"""
+    file_path = os.path.join("static", filename)
+    if os.path.exists(file_path):
+        from fastapi.responses import FileResponse
+        return FileResponse(file_path, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Image not found")
 
 @app.post("/predict/")
 async def predict(vehicle_type: str = Form(...)):
-    global request_count
-    start_time = time.time()
-    request_count += 1
-    
     try:
-        logger.info(f"🔮 Ultra-fast prediction #{request_count} for: {vehicle_type}")
+        print(f"Prediction request for vehicle type: {vehicle_type}")
         
-        # Validate input
-        valid_types = ['car', 'bike', 'scooter', 'bus']
-        if vehicle_type.lower() not in valid_types:
+        # Use global variables
+        global model, scaler, data, numeric_features
+        
+        # Validate vehicle type
+        if vehicle_type.lower() not in vehicle_type_to_model:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Invalid vehicle type. Must be one of: {valid_types}"
+                detail=f"Invalid vehicle type. Valid types: {list(vehicle_type_to_model.keys())}"
             )
         
-        # Generate deterministic data
-        seed = int(hashlib.md5(vehicle_type.encode()).hexdigest()[:8], 16) % (2**31)
-        random.seed(seed)
+        ev_model = vehicle_type_to_model[vehicle_type.lower()]
         
-        # Define realistic feature ranges
-        feature_configs = {
-            'SOC (%)': (75, 95),
-            'Voltage (V)': (350, 400),
-            'Current (A)': (10, 50),
-            'Battery Temp (°C)': (25, 40),
-            'Ambient Temp (°C)': (20, 30),
-            'Charging Duration (min)': (30, 120),
-            'Degradation Rate (%)': (0.1, 2.5),
-            'Efficiency (%)': (85, 98),
-            'Charging Cycles': (100, 2000)
-        }
+        # Get sample data (either from real data or generate dummy data)
+        if data is not None and len(data) > 0:
+            # Use real data
+            sample_idx = np.random.randint(0, len(data))
+            original = data.iloc[sample_idx][numeric_features].values
+        else:
+            # Generate dummy data
+            print("Using dummy data for prediction")
+            original = np.random.uniform(0.1, 0.9, len(numeric_features))
         
+        # Make prediction
+        if model is not None and scaler is not None:
+            try:
+                # Scale input
+                original_reshaped = original.reshape(1, -1)
+                scaled_features = scaler.transform(original_reshaped)
+                
+                # Reshape for model if needed
+                if len(scaled_features.shape) == 2:
+                    scaled_features = scaled_features.reshape((1, scaled_features.shape[1], 1))
+                
+                # Make prediction
+                prediction_scaled = model.predict(scaled_features, verbose=0)
+                prediction = scaler.inverse_transform(prediction_scaled.reshape(1, -1)).flatten()
+            except Exception as model_error:
+                print(f"Model prediction error: {model_error}")
+                # Fallback to dummy prediction
+                prediction = original + np.random.uniform(-0.1, 0.1, len(original))
+        else:
+            # Generate dummy prediction
+            prediction = original + np.random.uniform(-0.1, 0.1, len(original))
+        
+        # Create visualization
+        try:
+            plt.figure(figsize=(12, 6))
+            plt.style.use('default')
+            
+            index = np.arange(len(numeric_features))
+            bar_width = 0.35
+            
+            bars1 = plt.bar(index - bar_width/2, original, bar_width, 
+                           label='Original', alpha=0.8, color='#2E86AB')
+            bars2 = plt.bar(index + bar_width/2, prediction, bar_width, 
+                           label='Predicted', alpha=0.8, color='#A23B72')
+            
+            plt.xlabel('Parameters', fontsize=12)
+            plt.ylabel('Values', fontsize=12)
+            plt.title(f"{vehicle_type.title()} - Battery Parameters: Original vs Predicted", fontsize=14)
+            plt.xticks(index, numeric_features, rotation=45, ha='right')
+            plt.legend(fontsize=12)
+            plt.grid(True, alpha=0.3)
+            
+            # Add value labels on bars
+            for bar in bars1:
+                height = bar.get_height()
+                plt.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{height:.2f}', ha='center', va='bottom', fontsize=8)
+            
+            for bar in bars2:
+                height = bar.get_height()
+                plt.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{height:.2f}', ha='center', va='bottom', fontsize=8)
+            
+            plt.tight_layout()
+            
+            # Save plot
+            plot_filename = f"{uuid.uuid4().hex}.png"
+            plot_path = os.path.join("static", plot_filename)
+            plt.savefig(plot_path, dpi=100, bbox_inches='tight', facecolor='white')
+            plt.close()
+            
+            print(f"Plot saved to: {plot_path}")
+            chart_url = f"/static/{plot_filename}"
+            
+        except Exception as plot_error:
+            print(f"Plot generation error: {plot_error}")
+            chart_url = "/static/placeholder.png"  # Use placeholder if plot fails
+        
+        # Prepare table data
         rows = []
-        for feature, (min_val, max_val) in feature_configs.items():
-            original_val = round(random.uniform(min_val, max_val), 4)
-            # Add small realistic variation
-            variation_percent = random.uniform(-0.05, 0.08)  # -5% to +8%
-            predicted_val = round(original_val * (1 + variation_percent), 4)
-            difference_val = round(predicted_val - original_val, 4)
+        for i, col in enumerate(numeric_features):
+            original_val = float(original[i])
+            predicted_val = float(prediction[i])
+            difference_val = predicted_val - original_val
             
             rows.append({
-                "parameter": feature,
-                "original": original_val,
-                "predicted": predicted_val,
-                "difference": difference_val
+                "parameter": col,
+                "original": round(original_val, 4),
+                "predicted": round(predicted_val, 4),
+                "difference": round(difference_val, 4)
             })
         
-        # Create instant chart
-        chart_url = create_instant_chart(rows, vehicle_type)
-        
-        response_time = time.time() - start_time
-        logger.info(f"✅ Ultra-fast prediction completed in {response_time:.3f}s")
+        print("Prediction completed successfully")
         
         return {
             "status": "success",
             "vehicle_type": vehicle_type,
-            "ev_model": f"Ultra-Fast {vehicle_type.title()} Model",
+            "ev_model": ev_model,
             "chart_url": chart_url,
-            "table_data": rows,
-            "response_time_ms": round(response_time * 1000, 2),
-            "request_id": request_count,
-            "note": "Generated using ultra-lightweight algorithms"
+            "table_data": rows
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        response_time = time.time() - start_time
-        logger.error(f"❌ Error in {response_time:.3f}s: {e}")
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+        print(f"Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
-def create_instant_chart(data_rows, vehicle_type):
-    """Create instant Chart.js visualization"""
-    try:
-        chart_filename = f"chart_{uuid.uuid4().hex[:8]}.html"
-        chart_path = os.path.join("static", chart_filename)
-        
-        features = [row["parameter"].split('(')[0].strip() for row in data_rows]
-        original_vals = [row["original"] for row in data_rows]
-        predicted_vals = [row["predicted"] for row in data_rows]
-        
-        # Generate colors based on vehicle type
-        color_map = {
-            'car': {'primary': '#3498db', 'secondary': '#e74c3c'},
-            'bike': {'primary': '#2ecc71', 'secondary': '#f39c12'},
-            'scooter': {'primary': '#9b59b6', 'secondary': '#1abc9c'},
-            'bus': {'primary': '#34495e', 'secondary': '#e67e22'}
-        }
-        colors = color_map.get(vehicle_type.lower(), color_map['car'])
-        
-        html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{vehicle_type.title()} Battery Analysis</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
-    <style>
-        body {{ 
-            margin: 0; 
-            padding: 20px; 
-            font-family: 'Segoe UI', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-        }}
-        .container {{ 
-            max-width: 1000px; 
-            margin: 0 auto; 
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-        }}
-        .header {{
-            text-align: center;
-            margin-bottom: 30px;
-        }}
-        .chart-container {{ 
-            position: relative;
-            height: 500px; 
-            margin: 20px 0;
-        }}
-        .stats {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-top: 30px;
-        }}
-        .stat-card {{
-            background: linear-gradient(45deg, {colors['primary']}, {colors['secondary']});
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-            text-align: center;
-        }}
-        .stat-number {{ font-size: 2em; font-weight: bold; }}
-        .stat-label {{ font-size: 0.9em; opacity: 0.9; }}
-        .footer {{
-            text-align: center;
-            margin-top: 30px;
-            color: #666;
-            font-size: 0.9em;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🔋 {vehicle_type.title()} Battery Analysis</h1>
-            <p>Real-time AI-powered battery performance prediction</p>
-        </div>
-        
-        <div class="chart-container">
-            <canvas id="batteryChart"></canvas>
-        </div>
-        
-        <div class="stats">
-            <div class="stat-card">
-                <div class="stat-number">{original_vals[0]:.1f}%</div>
-                <div class="stat-label">State of Charge</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">{original_vals[1]:.0f}V</div>
-                <div class="stat-label">Voltage</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">{original_vals[7]:.1f}%</div>
-                <div class="stat-label">Efficiency</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">{original_vals[8]:.0f}</div>
-                <div class="stat-label">Charge Cycles</div>
-            </div>
-        </div>
-        
-        <div class="footer">
-            <p>⚡ Generated in real-time using advanced ML algorithms</p>
-            <p>🚀 Powered by Ultra-Fast EV Battery Management System</p>
-        </div>
-    </div>
+@app.get("/vehicle-types")
+async def get_vehicle_types():
+    return {"vehicle_types": list(vehicle_type_to_model.keys())}
 
-    <script>
-        const ctx = document.getElementById('batteryChart').getContext('2d');
-        
-        const chart = new Chart(ctx, {{
-            type: 'bar',
-            data: {{
-                labels: {json.dumps(features)},
-                datasets: [{{
-                    label: 'Current Values',
-                    data: {json.dumps(original_vals)},
-                    backgroundColor: '{colors["primary"]}80',
-                    borderColor: '{colors["primary"]}',
-                    borderWidth: 2,
-                    borderRadius: 8,
-                    borderSkipped: false,
-                }}, {{
-                    label: 'Predicted Values',
-                    data: {json.dumps(predicted_vals)},
-                    backgroundColor: '{colors["secondary"]}80',
-                    borderColor: '{colors["secondary"]}',
-                    borderWidth: 2,
-                    borderRadius: 8,
-                    borderSkipped: false,
-                }}]
-            }},
-            options: {{
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {{
-                    title: {{
-                        display: true,
-                        text: 'Battery Parameter Analysis',
-                        font: {{ size: 18, weight: 'bold' }}
-                    }},
-                    legend: {{
-                        position: 'top',
-                        labels: {{ font: {{ size: 14 }} }}
-                    }},
-                    tooltip: {{
-                        backgroundColor: 'rgba(0,0,0,0.8)',
-                        titleColor: 'white',
-                        bodyColor: 'white',
-                        borderColor: '{colors["primary"]}',
-                        borderWidth: 1
-                    }}
-                }},
-                scales: {{
-                    x: {{
-                        grid: {{ display: false }},
-                        ticks: {{ font: {{ size: 12 }} }}
-                    }},
-                    y: {{
-                        beginAtZero: false,
-                        grid: {{ color: 'rgba(0,0,0,0.1)' }},
-                        ticks: {{ font: {{ size: 12 }} }}
-                    }}
-                }},
-                animation: {{
-                    duration: 1500,
-                    easing: 'easeInOutQuart'
-                }}
-            }}
-        }});
-    </script>
-</body>
-</html>"""
-        
-        with open(chart_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
-        return f"/static/{chart_filename}"
-        
-    except Exception as e:
-        logger.error(f"❌ Chart creation error: {e}")
-        return "/static/placeholder.html"
+# Add a warmup endpoint
+@app.get("/warmup")
+async def warmup():
+    """Warmup endpoint to ensure models are loaded"""
+    global model, data, scaler
+    return {
+        "status": "ready",
+        "model_status": "loaded" if model is not None else "not_loaded",
+        "data_status": "loaded" if data is not None else "not_loaded",
+        "scaler_status": "loaded" if scaler is not None else "not_loaded"
+    }
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    logger.info(f"🚀 Starting ultra-fast server on port {port}")
-    
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=port,
-        log_level="info"
-    )
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=120)
