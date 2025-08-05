@@ -92,7 +92,7 @@ tensorboard_logs/
 mlruns/
 
 # Data files (uncomment if you don't want to track data)
-# *.csv
+*.csv
 # *.json
 # *.xlsx
 # *.xls
