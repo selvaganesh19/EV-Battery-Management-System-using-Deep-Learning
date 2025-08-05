@@ -85,9 +85,9 @@ async function handleFormSubmit(e) {
         const formData = new FormData();
         formData.append('vehicle_type', vehicleType);
         
-        // Add timeout for better error handling
+        // Increase timeout to 60 seconds for model loading
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
         
         const response = await fetch(`${API_BASE_URL}/predict/`, {
             method: 'POST',
@@ -116,7 +116,7 @@ async function handleFormSubmit(e) {
         
         let errorMessage = 'Failed to get prediction';
         if (error.name === 'AbortError') {
-            errorMessage = 'Request timed out. Please try again.';
+            errorMessage = 'Request timed out. The model is taking longer than expected. Please try again.';
         } else if (error.message.includes('Failed to fetch')) {
             errorMessage = 'Cannot connect to server. Please check if the backend is running.';
         } else {
