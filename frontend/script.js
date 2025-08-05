@@ -87,7 +87,7 @@ async function handleFormSubmit(e) {
         
         // Increase timeout to 60 seconds for model loading
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes timeout
         
         const response = await fetch(`${API_BASE_URL}/predict/`, {
             method: 'POST',
